@@ -1080,6 +1080,27 @@ class QuickWindow(Widget):
         )
         return Object.create(self.client, data)
 
+    def find_item_by_property(self, property_name, property_value):
+        """
+        Recursively search the QML tree for a :class:`QuickItem` whose
+        *property_name* property equals *property_value* (string comparison).
+
+        Example::
+
+          btn = quick_window.find_item_by_property('displayText', 'preset')
+          btn.click()
+
+        :param property_name: QML/Qt property name to match (e.g. 'displayText').
+        :param property_value: Expected string value of that property.
+        """
+        data = self.client.send_command(
+            'quick_item_find_by_property',
+            quick_window_oid=self.oid,
+            property_name=property_name,
+            property_value=property_value,
+        )
+        return Object.create(self.client, data)
+
     def items(self, alias=None, path=None):
         """
         Returns all :class:`funq.models.QuickItem` objects matching ``path``.

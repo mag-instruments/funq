@@ -394,6 +394,52 @@ QtJson::JsonObject Player::quick_items_find(
     return result;
 }
 
+#ifdef QT_QUICK_LIB
+static QQuickItem * _findQuickItemByProperty(QQuickItem * item,
+                                              const QString & propName,
+                                              const QString & propValue) {
+    QVariant v = item->property(propName.toLatin1());
+    if (v.isValid() && v.toString() == propValue) {
+        return item;
+    }
+    for (QQuickItem * child : item->childItems()) {
+        QQuickItem * found = _findQuickItemByProperty(child, propName, propValue);
+        if (found) return found;
+    }
+    return nullptr;
+}
+#endif
+
+QtJson::JsonObject Player::quick_item_find_by_property(
+    const QtJson::JsonObject & command) {
+    QtJson::JsonObject result;
+#ifdef QT_QUICK_LIB
+    WidgetLocatorContext<QQuickWindow> ctx(this, command, "quick_window_oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    QString propName = command["property_name"].toString();
+    QString propValue = command["property_value"].toString();
+
+    QQuickItem * found = _findQuickItemByProperty(
+        ctx.widget->contentItem(), propName, propValue);
+    if (!found) {
+        return createError(
+            "InvalidQuickItem",
+            QString("Unable to find quick item with %1 == `%2`")
+                .arg(propName, propValue));
+    }
+    qulonglong id = registerObject(found);
+    result["oid"] = id;
+    dump_object(found, result);
+    result["quick_window_oid"] = command["quick_window_oid"].toString();
+#else
+    Q_UNUSED(command);
+    result = createQtQuickOnlyError();
+#endif
+    return result;
+}
+
 QtJson::JsonObject Player::active_widget(const QtJson::JsonObject & command) {
 
     qDebug()<<"[funq] Getting active widget";
