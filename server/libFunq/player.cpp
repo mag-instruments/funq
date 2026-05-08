@@ -35,9 +35,11 @@ knowledge of the CeCILL v2.1 license and that you accept its terms.
 #include "player.h"
 
 #include "dragndropresponse.h"
+#include "json.h"
 #include "objectpath.h"
 #include "shortcutresponse.h"
 
+#include <QThread>
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QAction>
@@ -358,7 +360,43 @@ QtJson::JsonObject Player::quick_item_find(const QtJson::JsonObject & command) {
     return result;
 }
 
+QtJson::JsonObject Player::quick_items_find(
+    const QtJson::JsonObject & command) {
+    QtJson::JsonObject result;
+#ifdef QT_QUICK_LIB
+    WidgetLocatorContext<QQuickWindow> ctx(this, command, "quick_window_oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    ctx.widget->raise();
+    QString path = command["path"].toString();
+    QList<QQuickItem *> items = ObjectPath::findQuickItems(ctx.widget, path);
+    qDebug()<<"Found items for path:"<<items;
+    if (items.isEmpty()) {
+        return createError(
+            "InvalidQuickItem",
+            QString("Unable to find quick items with path `%1`").arg(path));
+    }
+    QtJson::JsonArray outItems;
+    foreach (QQuickItem * item, items) {
+        QtJson::JsonObject out;
+        qulonglong id = registerObject(item);
+        out["oid"] = id;
+        dump_object(item, out);
+        outItems << out;
+    }
+    result["items"] = outItems;
+    result["quick_window_oid"] = command["quick_window_oid"].toString();
+#else
+    Q_UNUSED(command);
+    result = createQtQuickOnlyError();
+#endif
+    return result;
+}
+
 QtJson::JsonObject Player::active_widget(const QtJson::JsonObject & command) {
+
+    qDebug()<<"[funq] Getting active widget";
 
     // Raise all windows. TODO refactor it
     for (auto w : QApplication::allWindows()) {
@@ -393,6 +431,13 @@ QtJson::JsonObject Player::active_widget(const QtJson::JsonObject & command) {
             "NoActiveWindow",
             QString::fromUtf8("There is no active widget (%1)").arg(type));
     }
+
+    if (QWindow *win = qobject_cast<QWindow *>(active)) {
+        win->requestActivate();
+    } else if (QWidget *w = qobject_cast<QWidget *>(active)) {
+        w->activateWindow();
+    }
+
     qulonglong id = registerObject(active);
     QtJson::JsonObject result;
     result["oid"] = id;

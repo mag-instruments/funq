@@ -1079,3 +1079,34 @@ class QuickWindow(Widget):
             qid=id,
         )
         return Object.create(self.client, data)
+
+    def items(self, alias=None, path=None):
+        """
+        Returns all :class:`funq.models.QuickItem` objects matching ``path``.
+
+        When several QML items share the same object path, ``items`` allows
+        retrieving each instance so that tests can disambiguate them later
+        (for example by inspecting their text property).
+
+        :param alias: alias defined in the aliases file that points to the
+                      items.
+        :param path: path of the items, relative to the view (do not pass
+                     the full path)
+        """
+        if not (alias or path):
+            raise TypeError("alias or path must be defined")
+
+        if alias and not path:
+            path = self.client.aliases[alias]
+            if not path.startswith(self.path):
+                raise TypeError("alias %r does not belong to this quick window"
+                                % path)
+            path = path[len(self.path)+2:]
+
+        data = self.client.send_command(
+            'quick_items_find',
+            quick_window_oid=self.oid,
+            path=path,
+        )
+        return [Object.create(self.client, item)
+                for item in data.get('items', [])]

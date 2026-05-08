@@ -159,11 +159,12 @@ class _FunqPytestState:
         if testcase is None:
             return
         if isinstance(testcase, MultiFunqTestCase):
+            funq = testcase.funq or {}
             if testcase.__app_config__:
                 for name, appconf in testcase.__app_config__.items():
-                    if appconf.screenshot_on_error:
+                    if appconf.screenshot_on_error and name in funq:
                         self._screenshoter.take_screenshot(
-                            testcase.funq[name],
+                            funq[name],
                             f"{testcase.id()} [{name}]")
         elif isinstance(testcase, FunqTestCase):
             appconf = getattr(testcase, '__app_config__', None)
