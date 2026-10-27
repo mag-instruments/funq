@@ -35,9 +35,11 @@ knowledge of the CeCILL v2.1 license and that you accept its terms.
 #include "player.h"
 
 #include "dragndropresponse.h"
+#include "json.h"
 #include "objectpath.h"
 #include "shortcutresponse.h"
 
+#include <QThread>
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QAction>
@@ -51,6 +53,7 @@ knowledge of the CeCILL v2.1 license and that you accept its terms.
 #include <QMouseEvent>
 #include <QStringList>
 #include <QTableView>
+#include <QTest>
 #include <QTime>
 #include <QTimer>
 #include <QTreeView>
@@ -72,6 +75,9 @@ using namespace ObjectPath;
 
 template <class T>
 void mouse_click(T * w, const QPoint & pos, Qt::MouseButton button) {
+#if QT_VERSION_MAJOR >= 6
+    QTest::mouseClick(w, button, Qt::NoModifier, pos, 10);
+#else
     QPoint global_pos = w->mapToGlobal(pos);
     qApp->postEvent(w,
                     new QMouseEvent(QEvent::MouseButtonPress, pos, global_pos,
@@ -79,15 +85,32 @@ void mouse_click(T * w, const QPoint & pos, Qt::MouseButton button) {
     qApp->postEvent(w,
                     new QMouseEvent(QEvent::MouseButtonRelease, pos, global_pos,
                                     button, Qt::NoButton, Qt::NoModifier));
+#endif
+}
+
+template <class T>
+void key_click(T * w, Qt::Key button, Qt::KeyboardModifiers modifier = Qt::NoModifier) {
+    QTest::keyClick(w, button, modifier, 10);
+}
+
+template <class T>
+void key_press(T * w, Qt::Key button, Qt::KeyboardModifiers modifier = Qt::NoModifier, int durationMs = 800) {
+    QTest::keyPress(w, button, modifier, 0);
+    QThread::msleep(durationMs);
+    QTest::keyRelease(w, button, modifier, 0);
 }
 
 template <class T>
 void mouse_dclick(T * w, const QPoint & pos) {
+#if QT_VERSION_MAJOR >= 6
+    QTest::mouseDClick(w, Qt::LeftButton, Qt::NoModifier, pos, 10);
+#else
     mouse_click(w, pos, Qt::LeftButton);
     qApp->postEvent(
         w,
         new QMouseEvent(QEvent::MouseButtonDblClick, pos, w->mapToGlobal(pos),
                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier));
+#endif
 }
 
 void activate_focus(QWidget * w) {
@@ -305,6 +328,7 @@ QtJson::JsonObject Player::quick_item_find(const QtJson::JsonObject & command) {
     if (ctx.hasError()) {
         return ctx.lastError;
     }
+    ctx.widget->raise();
     QQuickItem * item;
     qulonglong id;
     QString qid = command["qid"].toString();
@@ -336,7 +360,95 @@ QtJson::JsonObject Player::quick_item_find(const QtJson::JsonObject & command) {
     return result;
 }
 
+QtJson::JsonObject Player::quick_items_find(
+    const QtJson::JsonObject & command) {
+    QtJson::JsonObject result;
+#ifdef QT_QUICK_LIB
+    WidgetLocatorContext<QQuickWindow> ctx(this, command, "quick_window_oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    ctx.widget->raise();
+    QString path = command["path"].toString();
+    QList<QQuickItem *> items = ObjectPath::findQuickItems(ctx.widget, path);
+    qDebug()<<"Found items for path:"<<items;
+    if (items.isEmpty()) {
+        return createError(
+            "InvalidQuickItem",
+            QString("Unable to find quick items with path `%1`").arg(path));
+    }
+    QtJson::JsonArray outItems;
+    foreach (QQuickItem * item, items) {
+        QtJson::JsonObject out;
+        qulonglong id = registerObject(item);
+        out["oid"] = id;
+        dump_object(item, out);
+        outItems << out;
+    }
+    result["items"] = outItems;
+    result["quick_window_oid"] = command["quick_window_oid"].toString();
+#else
+    Q_UNUSED(command);
+    result = createQtQuickOnlyError();
+#endif
+    return result;
+}
+
+#ifdef QT_QUICK_LIB
+static QQuickItem * _findQuickItemByProperty(QQuickItem * item,
+                                              const QString & propName,
+                                              const QString & propValue) {
+    QVariant v = item->property(propName.toLatin1());
+    if (v.isValid() && v.toString() == propValue) {
+        return item;
+    }
+    for (QQuickItem * child : item->childItems()) {
+        QQuickItem * found = _findQuickItemByProperty(child, propName, propValue);
+        if (found) return found;
+    }
+    return nullptr;
+}
+#endif
+
+QtJson::JsonObject Player::quick_item_find_by_property(
+    const QtJson::JsonObject & command) {
+    QtJson::JsonObject result;
+#ifdef QT_QUICK_LIB
+    WidgetLocatorContext<QQuickWindow> ctx(this, command, "quick_window_oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    QString propName = command["property_name"].toString();
+    QString propValue = command["property_value"].toString();
+
+    QQuickItem * found = _findQuickItemByProperty(
+        ctx.widget->contentItem(), propName, propValue);
+    if (!found) {
+        return createError(
+            "InvalidQuickItem",
+            QString("Unable to find quick item with %1 == `%2`")
+                .arg(propName, propValue));
+    }
+    qulonglong id = registerObject(found);
+    result["oid"] = id;
+    dump_object(found, result);
+    result["quick_window_oid"] = command["quick_window_oid"].toString();
+#else
+    Q_UNUSED(command);
+    result = createQtQuickOnlyError();
+#endif
+    return result;
+}
+
 QtJson::JsonObject Player::active_widget(const QtJson::JsonObject & command) {
+
+    qDebug()<<"[funq] Getting active widget";
+
+    // Raise all windows. TODO refactor it
+    for (auto w : QApplication::allWindows()) {
+        w->raise();
+    }
+
     QObject * active;
     QString type = command["type"].toString();
     if (type == "modal") {
@@ -365,6 +477,13 @@ QtJson::JsonObject Player::active_widget(const QtJson::JsonObject & command) {
             "NoActiveWindow",
             QString::fromUtf8("There is no active widget (%1)").arg(type));
     }
+
+    if (QWindow *win = qobject_cast<QWindow *>(active)) {
+        win->requestActivate();
+    } else if (QWidget *w = qobject_cast<QWidget *>(active)) {
+        w->activateWindow();
+    }
+
     qulonglong id = registerObject(active);
     QtJson::JsonObject result;
     result["oid"] = id;
@@ -535,20 +654,119 @@ QtJson::JsonObject Player::widget_click(const QtJson::JsonObject & command) {
 QtJson::JsonObject Player::quick_item_click(
     const QtJson::JsonObject & command) {
 #ifdef QT_QUICK_LIB
-#if QT_VERSION_MAJOR >= 6
-    return createError(
-        "Qt5Only", "This method is currently not supported with Qt6.");
-#endif
     QuickItemLocatorContext ctx(this, command, "oid");
     if (ctx.hasError()) {
         return ctx.lastError;
     }
 
-    QPointF relativeCenter(ctx.item->width() / 2.0, ctx.item->height() / 2.0);
+    QPoint clickPoint;
+    int x = command["xpos"].toInt();
+    int y = command["ypos"].toInt();
+    if (x >= 0 && y >= 0) {
+        clickPoint = QPoint(x, y);
+    } else {
+        clickPoint = QPoint(ctx.item->width() / 2.0, ctx.item->height() / 2.0);
+    }
 
-    QPoint sPos = ctx.item->mapToScene(relativeCenter).toPoint();
+    QPoint pos = ctx.item->mapToScene(clickPoint).toPoint();
+    QString action = command["mouseAction"].toString();
 
-    mouse_click(ctx.window, sPos, Qt::LeftButton);
+    if (action == "doubleclick") {
+        mouse_dclick(ctx.window, pos);
+    } else if (action == "rightclick") {
+        mouse_click(ctx.window, pos, Qt::RightButton);
+    } else if (action == "middleclick") {
+        mouse_click(ctx.window, pos, Qt::MiddleButton);
+    } else {
+        mouse_click(ctx.window, pos, Qt::LeftButton);
+    }
+
+    QtJson::JsonObject result;
+    return result;
+#else
+    Q_UNUSED(command);
+    return createQtQuickOnlyError();
+#endif
+}
+
+QtJson::JsonObject Player::quick_item_key_click(
+    const QtJson::JsonObject & command) {
+#ifdef QT_QUICK_LIB
+    QuickItemLocatorContext ctx(this, command, "oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    Qt::Key key = Qt::Key_unknown;
+    QVariant keyId = command["key"];
+    if (keyId.type() == QVariant::String) {
+        key = static_cast<Qt::Key>(keyId.toString().toUInt(nullptr, 16));
+    }
+    if (key == Qt::Key::Key_unknown) {
+        return createError(
+            "Unknown key",
+            QString::fromUtf8(
+                "Can`t cast %1 to Qt::Key").arg(keyId.toString())
+                .arg(ctx.id));
+    }
+    Qt::KeyboardModifiers modifiers;
+    QVariant modifiersList = command["modifiers"];
+    if (modifiersList.type() == QVariant::List) {
+        if (modifiersList.toList().isEmpty()) {
+            modifiers = Qt::NoModifier;
+        } else {
+            for (auto mod : modifiersList.toList()) {
+                modifiers |= static_cast<Qt::KeyboardModifier>(mod.toString().toUInt(nullptr, 16));
+            }
+        }
+    }
+
+    key_click(ctx.window, key, modifiers);
+    QtJson::JsonObject result;
+    return result;
+#else
+    Q_UNUSED(command);
+    return createQtQuickOnlyError();
+#endif
+}
+
+QtJson::JsonObject Player::quick_item_key_press(
+    const QtJson::JsonObject & command) {
+#ifdef QT_QUICK_LIB
+    QuickItemLocatorContext ctx(this, command, "oid");
+    if (ctx.hasError()) {
+        return ctx.lastError;
+    }
+    Qt::Key key = Qt::Key_unknown;
+    QVariant keyId = command["key"];
+    if (keyId.isValid() && keyId.type() == QVariant::String) {
+        key = static_cast<Qt::Key>(keyId.toString().toUInt(nullptr, 16));
+    }
+    if (key == Qt::Key::Key_unknown) {
+        return createError(
+            "Unknown key",
+            QString::fromUtf8(
+                "Can`t cast %1 to Qt::Key").arg(keyId.toString())
+                .arg(ctx.id));
+    }
+    Qt::KeyboardModifiers modifiers;
+    QVariant modifiersList = command["modifiers"];
+    if (modifiersList.isValid() && modifiersList.type() == QVariant::List) {
+        if (modifiersList.toList().isEmpty()) {
+            modifiers = Qt::NoModifier;
+        } else {
+            for (auto mod : modifiersList.toList()) {
+                modifiers |= static_cast<Qt::KeyboardModifier>(mod.toString().toUInt(nullptr, 16));
+            }
+        }
+    }
+
+    int durationMs = 800;
+    QVariant durationVar = command["duration"];
+    if (durationVar.isValid()) {
+       durationMs = durationVar.toInt();
+    }
+
+    key_press(ctx.window, key, modifiers, durationMs);
     QtJson::JsonObject result;
     return result;
 #else

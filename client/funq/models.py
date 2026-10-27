@@ -35,10 +35,11 @@
 """
 Definition of widgets and models useable in funq.
 """
-from funq.tools import wait_for
+from funq.tools import wait_for, QtKeyDict, QtKeyboardModifierDict
 from funq.errors import FunqError
 import json
 import base64
+
 
 
 class TreeItem(object):  # pylint: disable=R0903
@@ -937,15 +938,66 @@ class QuickItem(Object):
 
     CPP_CLASS = "QQuickItem"
 
-    def click(self):
+    def click(self, xpos=-1, ypos=-1):
         """
         Click on the :class:`QuickItem`.
         """
         self.client.send_command(
             "quick_item_click",
-            oid=self.oid
+            oid=self.oid,
+            xpos=xpos,
+            ypos=ypos
+        )
+    
+    def dclick(self):
+        """
+        DoubleClick on the :class:`QuickItem`.
+        """
+        self.client.send_command(
+            "quick_item_click",
+            oid=self.oid,
+            mouseAction='doubleclick'
         )
 
+    def key_click(self, key, modifiers):
+        """
+        Click on QQuickItem with key + modifiers
+
+        :param:key is key from QtKeyDict, this dict is map of most common Qt::Key enum values.
+        :param:modifiers is array with keys from QtKeyboardModifierDict
+        """
+
+        modifiersList = []
+        for mod in modifiers:
+            modifiersList.append(QtKeyboardModifierDict[mod])
+
+        self.client.send_command(
+            "quick_item_key_click",
+            oid=self.oid,
+            key=QtKeyDict[key],
+            modifiers=modifiersList
+        )
+
+    def key_press(self, key, modifiers, duration):
+        """
+        Press on QQuickItem with key + modifiers and release after duration
+
+        :param:key is key from QtKeyDict, this dict is map of most common Qt::Key enum values.
+        :param:modifiers is array with keys from QtKeyboardModifierDict
+        :param:duration is duration of pressing in milliseconds
+        """
+
+        modifiersList = []
+        for mod in modifiers:
+            modifiersList.append(str(QtKeyboardModifierDict[mod]))
+
+        self.client.send_command(
+            "quick_item_key_press",
+            oid=self.oid,
+            key=str(QtKeyDict[key]),
+            modifiers=modifiersList,
+            duration=duration
+        )
 
 class QuickWindow(Widget):
     """
@@ -1027,3 +1079,55 @@ class QuickWindow(Widget):
             qid=id,
         )
         return Object.create(self.client, data)
+
+    def find_item_by_property(self, property_name, property_value):
+        """
+        Recursively search the QML tree for a :class:`QuickItem` whose
+        *property_name* property equals *property_value* (string comparison).
+
+        Example::
+
+          btn = quick_window.find_item_by_property('displayText', 'preset')
+          btn.click()
+
+        :param property_name: QML/Qt property name to match (e.g. 'displayText').
+        :param property_value: Expected string value of that property.
+        """
+        data = self.client.send_command(
+            'quick_item_find_by_property',
+            quick_window_oid=self.oid,
+            property_name=property_name,
+            property_value=property_value,
+        )
+        return Object.create(self.client, data)
+
+    def items(self, alias=None, path=None):
+        """
+        Returns all :class:`funq.models.QuickItem` objects matching ``path``.
+
+        When several QML items share the same object path, ``items`` allows
+        retrieving each instance so that tests can disambiguate them later
+        (for example by inspecting their text property).
+
+        :param alias: alias defined in the aliases file that points to the
+                      items.
+        :param path: path of the items, relative to the view (do not pass
+                     the full path)
+        """
+        if not (alias or path):
+            raise TypeError("alias or path must be defined")
+
+        if alias and not path:
+            path = self.client.aliases[alias]
+            if not path.startswith(self.path):
+                raise TypeError("alias %r does not belong to this quick window"
+                                % path)
+            path = path[len(self.path)+2:]
+
+        data = self.client.send_command(
+            'quick_items_find',
+            quick_window_oid=self.oid,
+            path=path,
+        )
+        return [Object.create(self.client, item)
+                for item in data.get('items', [])]
